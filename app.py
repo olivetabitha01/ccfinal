@@ -3,6 +3,7 @@ import joblib
 import numpy as np
 from datetime import datetime
 import random
+import time
 
 # Initialize Flask with 'web' as template folder to match your project structure
 app = Flask(__name__, template_folder='web')
@@ -29,15 +30,15 @@ except Exception as e:
     print(f"⚠️ Failed to load random_forest_model.joblib: {e}")
 
 # ===========================
-# 🌡️ Sensor Data Storage - ALL 6 PARAMETERS NOW
+# 🌡️ Sensor Data Storage
 # ===========================
 sensor_data = {
     'Temperature': None,
     'Humidity': None,
-    'Sunlight': None,                    # NOW FROM SENSOR
-    'CO2_Emitted_Cars': None,
-    'CO2_Absorbed_Trees': None,          # NOW FROM SENSOR
-    'O2_Released_Trees': None,           # NOW FROM SENSOR
+    'Soil_Moisture': None,
+    'Sunlight': None,
+    'CO2_Absorbed': None,
+    'Oxygen_Released': None,
     'last_updated': None,
     'data_age_seconds': 0
 }
@@ -47,10 +48,9 @@ system_status = {
     'sensors': {
         'temperature': {'status': 'ON', 'last_reading': None},
         'humidity': {'status': 'ON', 'last_reading': None},
+        'soil': {'status': 'ON', 'last_reading': None},
         'light': {'status': 'ON', 'last_reading': None},
-        'co2_emitted': {'status': 'ON', 'last_reading': None},
-        'co2_absorbed': {'status': 'ON', 'last_reading': None},
-        'o2_released': {'status': 'ON', 'last_reading': None}
+        'co2': {'status': 'ON', 'last_reading': None}
     },
     'system': {
         'wifi': 'Connected',
@@ -86,19 +86,19 @@ def home():
 @app.route('/predict', methods=['POST'])
 def predict():
     """
-    Receives JSON with ALL 6 parameters from sensors and returns carbon credit score.
-    ALL parameters are now sensor-driven!
+    Receives JSON with parameter values and returns carbon credit score
+    with confidence metrics and detailed processing info.
     """
     data = request.get_json()
 
     try:
-        # Extract ALL 6 sensor parameters
+        # Extract and validate input data
         temp = float(data.get('Temperature', 0))
         hum = float(data.get('Humidity', 0))
-        sun = float(data.get('Sunlight', 0))                    # FROM SENSOR
+        sun = float(data.get('Sunlight', 0))
         co2_car = float(data.get('CO2_Emitted_Cars', 0))
-        co2_tree = float(data.get('CO2_Absorbed_Trees', 0))     # FROM SENSOR
-        o2_tree = float(data.get('O2_Released_Trees', 0))       # FROM SENSOR
+        co2_tree = float(data.get('CO2_Absorbed_Trees', 0))
+        o2_tree = float(data.get('O2_Released_Trees', 0))
 
         # Data validation
         if temp < -50 or temp > 60:
@@ -146,7 +146,7 @@ def predict():
             confidence = random.randint(85, 95)
 
         # Calculate additional metrics
-        photosynthesis_index = round((sun / 2000) * (co2_tree / 1000) * (temp / 30), 3) if sun and co2_tree else 0
+        photosynthesis_index = round((sun / 2000) * (co2_tree / 1000) * (temp / 30), 3)
         carbon_reduction = round(co2_tree - co2_car, 2) if co2_tree and co2_car else 0
         environmental_impact = "Positive" if carbon_reduction > 0 else "Negative" if carbon_reduction < 0 else "Neutral"
 
@@ -166,20 +166,16 @@ def predict():
                 'photosynthesis_index': photosynthesis_index,
                 'net_carbon_reduction': carbon_reduction,
                 'environmental_impact': environmental_impact,
-                'effective_tree_coverage': round(co2_tree / 100, 2) if co2_tree else 0,
-                'oxygen_production_rate': round(o2_tree / 100, 2) if o2_tree else 0
+                'effective_tree_coverage': round(co2_tree / 100, 2) if co2_tree else 0
             },
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'processing_info': {
                 'models_used': len(predictions),
-                'total_predictions': system_status['ml_info']['total_predictions'],
-                'all_sensors_active': True
+                'total_predictions': system_status['ml_info']['total_predictions']
             }
         }
 
         print(f"✅ Prediction complete: Score = {final_score}, Confidence = {confidence}%")
-        print(f"📊 Input data: Temp={temp}, Hum={hum}, Sun={sun}, CO2_car={co2_car}, CO2_tree={co2_tree}, O2={o2_tree}")
-        
         return jsonify(response)
 
     except ValueError as e:
@@ -190,20 +186,20 @@ def predict():
         return jsonify({'error': f'Prediction failed: {str(e)}'}), 500
 
 # ===========================
-# 📥 ESP32 Sensor Update Route - NOW ACCEPTS ALL 6 PARAMETERS
+# 📥 ESP32 Sensor Update Route
 # ===========================
 @app.route('/update_sensor', methods=['POST'])
 def update_sensor():
     """
-    Receives data from ESP32 or other IoT devices.
-    NOW ACCEPTS ALL 6 SENSOR PARAMETERS:
+    Receives data from ESP32.
+    Expected format:
     {
         "Temperature": 28.5,
         "Humidity": 60.1,
-        "Sunlight": 1200,                    // NOW SENSOR VALUE
-        "CO2_Emitted_Cars": 2350,
-        "CO2_Absorbed_Trees": 450,           // NOW SENSOR VALUE
-        "O2_Released_Trees": 380             // NOW SENSOR VALUE
+        "Soil_Moisture": 45,
+        "Sunlight": 75,
+        "CO2_Absorbed": 350,
+        "Oxygen_Released": 280
     }
     """
     global sensor_data
@@ -211,34 +207,26 @@ def update_sensor():
     incoming_data = request.json or {}
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Update ALL 6 sensor parameters
-    all_sensor_keys = ['Temperature', 'Humidity', 'Sunlight', 'CO2_Emitted_Cars', 'CO2_Absorbed_Trees', 'O2_Released_Trees']
-    
-    received_params = []
-    for key in all_sensor_keys:
+    # Update sensor data
+    for key in ['Temperature', 'Humidity', 'Soil_Moisture', 'Sunlight', 'CO2_Absorbed', 'Oxygen_Released']:
         if key in incoming_data:
             sensor_data[key] = incoming_data[key]
-            received_params.append(key)
-            
-            # Update individual sensor status
+            # Update sensor status
             if 'Temperature' in key:
                 system_status['sensors']['temperature']['last_reading'] = current_time
                 system_status['sensors']['temperature']['status'] = 'ON'
             elif 'Humidity' in key:
                 system_status['sensors']['humidity']['last_reading'] = current_time
                 system_status['sensors']['humidity']['status'] = 'ON'
+            elif 'Soil' in key:
+                system_status['sensors']['soil']['last_reading'] = current_time
+                system_status['sensors']['soil']['status'] = 'ON'
             elif 'Sunlight' in key:
                 system_status['sensors']['light']['last_reading'] = current_time
                 system_status['sensors']['light']['status'] = 'ON'
-            elif 'CO2_Emitted' in key:
-                system_status['sensors']['co2_emitted']['last_reading'] = current_time
-                system_status['sensors']['co2_emitted']['status'] = 'ON'
-            elif 'CO2_Absorbed' in key:
-                system_status['sensors']['co2_absorbed']['last_reading'] = current_time
-                system_status['sensors']['co2_absorbed']['status'] = 'ON'
-            elif 'O2_Released' in key:
-                system_status['sensors']['o2_released']['last_reading'] = current_time
-                system_status['sensors']['o2_released']['status'] = 'ON'
+            elif 'CO2' in key or 'Oxygen' in key:
+                system_status['sensors']['co2']['last_reading'] = current_time
+                system_status['sensors']['co2']['status'] = 'ON'
     
     sensor_data['last_updated'] = current_time
     sensor_data['data_age_seconds'] = 0
@@ -249,17 +237,13 @@ def update_sensor():
     system_status['pipeline']['cloud_sync']['status'] = 'Successful'
     system_status['pipeline']['cloud_sync']['timestamp'] = current_time
     
-    print(f"📡 Sensor data received at {current_time}")
-    print(f"📊 Received parameters: {', '.join(received_params)}")
-    print(f"📈 Data: {incoming_data}")
+    print(f"📡 Sensor data received at {current_time}: {incoming_data}")
     
     return jsonify({
         "status": "OK",
         "received": incoming_data,
         "timestamp": current_time,
-        "parameters_updated": received_params,
-        "total_sensors_active": len(received_params),
-        "message": f"Successfully updated {len(received_params)} sensor parameters"
+        "message": "Sensor data updated successfully"
     })
 
 # ===========================
@@ -268,7 +252,7 @@ def update_sensor():
 @app.route('/get_sensor', methods=['GET'])
 def get_sensor():
     """
-    Returns current sensor data for ALL 6 parameters with freshness indicators.
+    Returns current sensor data with freshness indicators.
     """
     # Calculate data age
     if sensor_data['last_updated']:
@@ -277,7 +261,7 @@ def get_sensor():
         sensor_data['data_age_seconds'] = int(age_seconds)
         
         # Update sensor status based on age
-        for sensor_key in ['temperature', 'humidity', 'light', 'co2_emitted', 'co2_absorbed', 'o2_released']:
+        for sensor_key in ['temperature', 'humidity', 'soil', 'co2', 'light']:
             if age_seconds > 30:
                 system_status['sensors'][sensor_key]['status'] = 'DELAYED'
             elif age_seconds > 60:
@@ -285,9 +269,7 @@ def get_sensor():
     
     response = {
         **sensor_data,
-        'system_status': system_status,
-        'sensors_count': 6,
-        'all_sensors_type': 'ALL_SENSOR_DRIVEN'
+        'system_status': system_status
     }
     
     return jsonify(response)
@@ -298,7 +280,7 @@ def get_sensor():
 @app.route('/system_status', methods=['GET'])
 def get_system_status():
     """
-    Returns detailed system status including ALL 6 sensor health,
+    Returns detailed system status including sensor health,
     ML model info, and pipeline status.
     """
     status_report = {
@@ -307,8 +289,6 @@ def get_system_status():
         'system': system_status['system'],
         'pipeline': system_status['pipeline'],
         'ml_info': system_status['ml_info'],
-        'total_sensors': 6,
-        'sensor_mode': 'ALL_AUTOMATED',
         'uptime': 'Online',
         'health': 'Healthy' if (lr_loaded or rf_loaded) else 'Degraded'
     }
@@ -331,28 +311,22 @@ def health_check():
         'models': {
             'linear_regression': 'loaded' if lr_loaded else 'not_loaded',
             'random_forest': 'loaded' if rf_loaded else 'not_loaded'
-        },
-        'sensor_count': 6,
-        'all_sensors_automated': True
+        }
     }), 200 if is_healthy else 503
 
 # ===========================
-# 📈 Analytics Route
+# 📈 Analytics Route (Optional)
 # ===========================
 @app.route('/analytics', methods=['GET'])
 def get_analytics():
     """
     Returns analytics and usage statistics.
     """
-    sensors_online = sum(1 for s in system_status['sensors'].values() if s['status'] == 'ON')
-    
     analytics = {
         'total_predictions': system_status['ml_info']['total_predictions'],
         'last_prediction_score': system_status['ml_info']['last_prediction'],
         'models_active': sum(system_status['ml_info']['models_loaded'].values()),
-        'sensors_online': sensors_online,
-        'total_sensors': 6,
-        'sensor_coverage': f"{(sensors_online/6)*100:.1f}%",
+        'sensors_online': sum(1 for s in system_status['sensors'].values() if s['status'] == 'ON'),
         'system_uptime': 'Active',
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -363,19 +337,12 @@ def get_analytics():
 # 🚀 Run Server
 # ===========================
 if __name__ == '__main__':
-    print("\n" + "="*60)
-    print("🌿 CARBON CREDIT DASHBOARD SERVER - ALL SENSORS AUTOMATED 🌿")
-    print("="*60)
+    print("\n" + "="*50)
+    print("🌿 CARBON CREDIT DASHBOARD SERVER 🌿")
+    print("="*50)
     print(f"✅ Linear Regression Model: {'Loaded' if lr_loaded else 'Not Loaded'}")
     print(f"✅ Random Forest Model: {'Loaded' if rf_loaded else 'Not Loaded'}")
-    print(f"📊 Total Sensors: 6 (ALL AUTOMATED)")
-    print(f"   • Temperature (sensor)")
-    print(f"   • Humidity (sensor)")
-    print(f"   • Sunlight (sensor) ← NOW SENSOR-DRIVEN")
-    print(f"   • CO₂ Emitted (sensor)")
-    print(f"   • CO₂ Absorbed (sensor) ← NOW SENSOR-DRIVEN")
-    print(f"   • O₂ Released (sensor) ← NOW SENSOR-DRIVEN")
     print(f"🌐 Server starting on http://0.0.0.0:5000")
-    print("="*60 + "\n")
+    print("="*50 + "\n")
     
     app.run(debug=True, host='0.0.0.0', port=5000)
